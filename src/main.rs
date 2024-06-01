@@ -2,6 +2,7 @@ use axum::Router;
 use services::worker::WorkerService;
 use tower_http::cors::CorsLayer;
 
+mod model;
 mod routes;
 mod services;
 
