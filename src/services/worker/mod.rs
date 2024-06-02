@@ -1,5 +1,6 @@
+mod service;
 mod worker;
 mod task;
 mod python;
 
-pub use worker::WorkerService;
+pub use service::WorkerService;

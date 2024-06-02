@@ -54,7 +54,21 @@ impl From<model::Task> for Task {
 
 #[derive(Clone)]
 pub struct TaskRunInfo {
-  pub task: Task,
+  pub task: model::Task,
   pub stop: Arc<Mutex<oneshot::Receiver<()>>>,
   pub status: watch::Sender<TaskStatus>
+}
+
+impl TaskRunInfo {
+  pub fn task_for_python(&self) -> Task {
+    self.task.clone().into()
+  }
+
+  pub async fn stopped(&self) -> bool {
+    self.stop.lock().await.try_recv().ok().is_some()
+  }
+
+  pub fn set_status(&self, status: TaskStatus) {
+    let _ = self.status.send(status);
+  }
 }
