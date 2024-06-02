@@ -18,6 +18,7 @@ pub enum TaskStatus {
   Running, // doing work
   Scheduled, // not done, awaiting to be run
   Done, // no more work to do
+  Fail, // failed during execution
   Cancelled // the task has been cancelled (might have not ended the work or even started)
 }
 
