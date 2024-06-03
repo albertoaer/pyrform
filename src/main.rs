@@ -18,6 +18,7 @@ async fn main() -> anyhow::Result<()> {
 
   let app = Router::new()
     .nest("/task", routes::task::router(&worker_service))
+    .nest("/worker", routes::worker::router(&worker_service))
     .layer(cors);
 
   let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();

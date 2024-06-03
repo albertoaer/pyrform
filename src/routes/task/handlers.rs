@@ -16,7 +16,7 @@ pub async fn list_tasks(State(TaskState { queued, .. }): State<TaskState>) -> im
 }
 
 pub async fn queue_task(
-  State(TaskState { mut worker_service, queued }): State<TaskState>,
+  State(TaskState { worker_service, queued }): State<TaskState>,
   Json(task): Json<Task>
 ) -> impl IntoResponse {
   let (stop, status) = match worker_service.queue_task(task.clone()).await {

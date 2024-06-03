@@ -6,7 +6,7 @@ use path_absolutize::Absolutize;
 use tokio::{fs, sync::{mpsc, oneshot, watch, Mutex, RwLock}, time::Instant};
 use tracing::debug;
 
-use crate::model::{Task, TaskStatus};
+use crate::model::{Task, TaskStatus, CreateWorkerData};
 
 use super::{task::TaskRunInfo, worker::{SharedWorkerInfo, Worker, WorkerRunInfo}};
 
@@ -88,7 +88,7 @@ impl WorkerService {
   /// queues a task
   /// if `Ok` is returned with two channels: `oneshot::Sender<()>` is the signal to stop the task and
   /// `watch::Receiver<TaskStatus>` provides the current task status
-  pub async fn queue_task(&mut self, task: Task) -> anyhow::Result<(oneshot::Sender<()>, watch::Receiver<TaskStatus>)> {
+  pub async fn queue_task(&self, task: Task) -> anyhow::Result<(oneshot::Sender<()>, watch::Receiver<TaskStatus>)> {
     let (status_tx, status_rx) = watch::channel(TaskStatus::Pending);
     let (stop_tx, stop_rx) = oneshot::channel();
     let result = Ok((stop_tx, status_rx));
@@ -128,7 +128,33 @@ impl WorkerService {
     result
   }
 
-  fn get_worker_path(&self, name: impl AsRef<str>) -> PathBuf {
+  pub async fn add_worker(&self, worker: CreateWorkerData) -> anyhow::Result<()> {
+    let path = self.get_worker_path(&worker.name);
+    if path.is_file() && !worker.replace {
+      return Err(anyhow::anyhow!("the worker ({}) already exists and `replace` was negated", worker.name))
+    }
+    fs::write(path, worker.source).await?;
+    Ok(())
+  }
+
+  pub async fn del_worker(&self, name: String) -> anyhow::Result<()> {
+    let path = self.get_worker_path(&name);
+    if !path.is_file() {
+      return Err(anyhow::anyhow!("worker does not exists ({})", name))
+    }
+    fs::remove_file(path).await?;
+    Ok(())
+  }
+
+  pub async fn get_worker(&self, name: String) -> anyhow::Result<String> {
+    let path = self.get_worker_path(&name);
+    if !path.is_file() {
+      return Err(anyhow::anyhow!("worker does not exists ({})", name))
+    }
+    Ok(fs::read_to_string(path).await?)
+  }
+
+  pub fn get_worker_path(&self, name: impl AsRef<str>) -> PathBuf {
     self.directory.join(format!("{}.py", name.as_ref()))
   }
 
@@ -139,9 +165,9 @@ impl WorkerService {
         *none = Some(self.new_worker_run_info(&name, Some(path)).await?);
       }
 
-      return Ok(info.clone());
+      return Ok(info.clone())
     }
-    return Err(anyhow::Error::msg(format!("unable to find the worker {}", name.as_ref())));
+    return Err(anyhow::anyhow!("unable to find the worker {}", name.as_ref()))
   }
 
   pub async fn new_worker_run_info(
