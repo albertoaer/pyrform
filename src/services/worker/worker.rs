@@ -52,6 +52,10 @@ impl Worker {
     self.done_tasks.load(std::sync::atomic::Ordering::Relaxed)
   }
 
+  pub async fn should_be_on(&self) -> bool {
+    self.run_info.read().await.is_some()
+  }
+
   pub async fn queue_task(&self, task: TaskRunInfo) {
     let _ = self.tasks.0.send(task).await;
   }

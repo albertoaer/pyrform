@@ -70,7 +70,10 @@ impl WorkerService {
 
         match (path.is_file(), self.workers_info.lock().await.entry(path.clone())) {
           (true, Entry::Vacant(vacant)) => { vacant.insert(Arc::new(RwLock::new(None))); }, // file create/renamed
-          (false, Entry::Occupied(ocupied)) => { ocupied.remove_entry(); }, // file removed/renamed
+          (false, Entry::Occupied(mut ocupied)) => {
+            *ocupied.get_mut().write().await = None;
+            ocupied.remove_entry();
+          }, // file removed/renamed
           (true, Entry::Occupied(mut ocupied)) => { // file content changed
             if let some @ Some(_) = ocupied.get_mut().write().await.deref_mut() {
               let worker_name = get_worker_name(&path).expect("worker name");
@@ -110,9 +113,15 @@ impl WorkerService {
     }
 
     { // the worker is found
-      if let Some(worker) = self.workers.lock().await.get(&worker_name) {
-        worker.queue_task(task_run_info).await;
-        return result
+      if let Entry::Occupied(mut worker) = self.workers.lock().await.entry(worker_name.clone()) {
+        {
+          let worker = worker.get_mut();
+          if worker.should_be_on().await {
+            worker.queue_task(task_run_info).await;
+            return result
+          }
+        }
+        worker.remove_entry(); // remove if it's not on
       }
     }
 
@@ -137,19 +146,19 @@ impl WorkerService {
     Ok(())
   }
 
-  pub async fn del_worker(&self, name: String) -> anyhow::Result<()> {
+  pub async fn del_worker(&self, name: impl AsRef<str>) -> anyhow::Result<()> {
     let path = self.get_worker_path(&name);
     if !path.is_file() {
-      return Err(anyhow::anyhow!("worker does not exists ({})", name))
+      return Err(anyhow::anyhow!("worker does not exists ({})", name.as_ref()))
     }
     fs::remove_file(path).await?;
     Ok(())
   }
 
-  pub async fn get_worker(&self, name: String) -> anyhow::Result<String> {
+  pub async fn get_worker(&self, name: impl AsRef<str>) -> anyhow::Result<String> {
     let path = self.get_worker_path(&name);
     if !path.is_file() {
-      return Err(anyhow::anyhow!("worker does not exists ({})", name))
+      return Err(anyhow::anyhow!("worker does not exists ({})", name.as_ref()))
     }
     Ok(fs::read_to_string(path).await?)
   }
@@ -167,7 +176,7 @@ impl WorkerService {
 
       return Ok(info.clone())
     }
-    return Err(anyhow::anyhow!("unable to find the worker {}", name.as_ref()))
+    return Err(anyhow::anyhow!("worker does not exists ({})", name.as_ref()))
   }
 
   pub async fn new_worker_run_info(
