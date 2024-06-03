@@ -13,12 +13,17 @@ pub struct Task {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "status")]
 pub enum TaskStatus {
   Pending, // awaiting to be run for first time
   Running, // doing work
   Scheduled, // not done, awaiting to be run
-  Done, // no more work to do
-  Fail, // failed during execution
+  Done {
+    outcome: String
+  }, // no more work to do
+  Fail {
+    reason: String
+  }, // failed during execution
   Cancelled // the task has been cancelled (might have not ended the work or even started)
 }
 

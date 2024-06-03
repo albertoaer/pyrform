@@ -38,8 +38,8 @@ pub async fn queue_task(
   });
 
   Json(serde_json::json!({
-    "status": TaskStatus::Pending,
-    "id": id
+    "id": id,
+    "info": TaskStatus::Pending
   }))
 }
 
@@ -54,7 +54,7 @@ pub async fn get_task(
   match status {
     Some(status) => Json(serde_json::json!({
       "id": id,
-      "status": status
+      "info": status
     })).into_response(),
     None => (StatusCode::NOT_FOUND, format!("{} not found", id)).into_response(),
   }

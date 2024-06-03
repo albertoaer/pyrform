@@ -39,8 +39,12 @@ pub async fn start_python_loop<F, O>(mut next: F) -> anyhow::Result<()>
         let result = func.call1(py, (task, ));
 
         let _ = task_info.set_status(match result {
-          Ok(_) => TaskStatus::Done,
-          Err(_) => TaskStatus::Fail,
+          Ok(outcome) => TaskStatus::Done {
+            outcome: outcome.to_string()
+          },
+          Err(reason) => TaskStatus::Fail {
+            reason: reason.to_string()
+          },
         });
       }
     })
