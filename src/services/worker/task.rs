@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use pyo3::{pyclass, pymethods};
-use tokio::sync::{oneshot, watch, Mutex};
+use tokio::{sync::{oneshot, watch, Mutex}, time::Instant};
 
 use crate::model::{self, TaskStatus};
 
@@ -56,7 +56,8 @@ impl From<model::Task> for Task {
 pub struct TaskRunInfo {
   pub task: model::Task,
   pub stop: Arc<Mutex<oneshot::Receiver<()>>>,
-  pub status: watch::Sender<TaskStatus>
+  pub status: watch::Sender<TaskStatus>,
+  pub creation: Instant
 }
 
 impl TaskRunInfo {

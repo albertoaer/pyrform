@@ -85,12 +85,22 @@ impl WorkerService {
     }
   }
 
-  pub async fn queue_task(&mut self, task: Task, stop: oneshot::Receiver<()>) -> anyhow::Result<watch::Receiver<TaskStatus>> {
-    let (tx, rx) = watch::channel(TaskStatus::Pending);
+  /// queues a task
+  /// if `Ok` is returned with two channels: `oneshot::Sender<()>` is the signal to stop the task and
+  /// `watch::Receiver<TaskStatus>` provides the current task status
+  pub async fn queue_task(&mut self, task: Task) -> anyhow::Result<(oneshot::Sender<()>, watch::Receiver<TaskStatus>)> {
+    let (status_tx, status_rx) = watch::channel(TaskStatus::Pending);
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let result = Ok((stop_tx, status_rx));
 
     let worker_name = task.worker.clone();
     let dedicated = task.dedicated;
-    let task_run_info = TaskRunInfo { status: tx, task, stop: Arc::new(Mutex::new(stop)) };
+    let task_run_info = TaskRunInfo {
+      task,
+      stop: Arc::new(Mutex::new(stop_rx)),
+      status: status_tx,
+      creation: Instant::now()
+    };
 
     if dedicated { // create a worker for dedicated work
       let info = self.get_worker_shared_run_info(&worker_name).await?;
@@ -101,13 +111,13 @@ impl WorkerService {
       worker.queue_task(task_run_info).await;
 
       tokio::spawn(worker.worker_loop());
-      return Ok(rx)
+      return result
     }
 
     { // the worker is found
       if let Some(worker) = self.workers.lock().await.get(&worker_name) {
         worker.queue_task(task_run_info).await;
-        return Ok(rx)
+        return result
       }
     }
 
@@ -120,7 +130,7 @@ impl WorkerService {
       self.workers.lock().await.insert(worker_name, worker);
     }
 
-    Ok(rx)
+    result
   }
 
   fn get_worker_path(&self, name: impl AsRef<str>) -> PathBuf {

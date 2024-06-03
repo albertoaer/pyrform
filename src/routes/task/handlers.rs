@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 use axum::{extract::{Path, State}, http::StatusCode, response::{IntoResponse, Response}, Json};
-use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::model::{Task, TaskStatus};
+use crate::model::Task;
 
 use super::state::{TaskManager, TaskState};
 
@@ -20,9 +19,8 @@ pub async fn queue_task(
   State(TaskState { mut worker_service, queued }): State<TaskState>,
   Json(task): Json<Task>
 ) -> impl IntoResponse {
-  let (stop_tx, stop_rx) = oneshot::channel();
-  let status = match worker_service.queue_task(task.clone(), stop_rx).await {
-    Ok(status) => status,
+  let (stop, status) = match worker_service.queue_task(task.clone()).await {
+    Ok(channels) => channels,
     Err(err) => return Json(serde_json::json!({
       "error": err.to_string()
     })),
@@ -31,15 +29,16 @@ pub async fn queue_task(
   let uuid = Uuid::new_v4();
   let id = uuid.to_string();
 
+  let info = status.borrow().clone();
   queued.lock().await.insert(uuid, TaskManager {
     task,
     status,
-    stop: Some(stop_tx)
+    stop: Some(stop)
   });
 
   Json(serde_json::json!({
     "id": id,
-    "info": TaskStatus::Pending
+    "info": info
   }))
 }
 
