@@ -1,6 +1,7 @@
 use std::sync::{atomic::AtomicIsize, Arc};
 
 use tokio::{sync::{mpsc, Mutex, RwLock}, time::Instant};
+use tracing::debug;
 
 use super::{python::start_python_loop, task::TaskRunInfo};
 
@@ -82,9 +83,11 @@ impl Worker {
           }
         };
 
+        debug!("about to run task with title: {:?}", task.task.title);
+
         Some((run_info, task))
       }
     }).await;
-    println!("worker ended")
+    debug!("worker ended");
   }
 }

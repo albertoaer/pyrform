@@ -4,6 +4,7 @@ use itertools::Itertools;
 use notify::{Config, RecommendedWatcher, Watcher};
 use path_absolutize::Absolutize;
 use tokio::{fs, sync::{mpsc, oneshot, watch, Mutex, RwLock}, time::Instant};
+use tracing::debug;
 
 use crate::model::{Task, TaskStatus};
 
@@ -79,7 +80,7 @@ impl WorkerService {
           (false, Entry::Vacant(_)) => { continue } // do nothing
         }
 
-        println!("updated: {:?}", path);
+        debug!("updated: {:?}", path);
       }
     }
   }
