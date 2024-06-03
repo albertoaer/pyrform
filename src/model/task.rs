@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -19,10 +21,14 @@ pub enum TaskStatus {
   Running, // doing work
   Scheduled, // not done, awaiting to be run
   Done {
-    outcome: String
+    outcome: String,
+    duration_total: Duration,
+    duration_execution: Duration
   }, // no more work to do
   Fail {
-    reason: String
+    reason: String,
+    duration_total: Duration,
+    duration_execution: Duration
   }, // failed during execution
   Cancelled // the task has been cancelled (might have not ended the work or even started)
 }

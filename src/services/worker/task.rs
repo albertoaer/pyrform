@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use pyo3::{pyclass, pymethods};
 use tokio::{sync::{oneshot, watch, Mutex}, time::Instant};
@@ -57,10 +57,25 @@ pub struct TaskRunInfo {
   pub task: model::Task,
   pub stop: Arc<Mutex<oneshot::Receiver<()>>>,
   pub status: watch::Sender<TaskStatus>,
-  pub creation: Instant
+  pub creation: Instant,
+  pub execution: Instant,
 }
 
 impl TaskRunInfo {
+  pub fn new(task: model::Task, stop: oneshot::Receiver<()>, status: watch::Sender<TaskStatus>) -> Self {
+    Self {
+      task,
+      stop: Arc::new(Mutex::new(stop)),
+      status,
+      creation: Instant::now(),
+      execution: Instant::now()
+    }
+  }
+
+  pub fn set_execution_now(&mut self) {
+    self.execution = Instant::now()
+  }
+
   pub fn task_for_python(&self) -> Task {
     self.task.clone().into()
   }
@@ -71,5 +86,11 @@ impl TaskRunInfo {
 
   pub fn set_status(&self, status: TaskStatus) {
     let _ = self.status.send(status);
+  }
+
+  /// returns (`total`, `execution`)
+  pub fn get_duration_now(&self) -> (Duration, Duration) {
+    let now = Instant::now();
+    (now - self.creation, now - self.execution)
   }
 }

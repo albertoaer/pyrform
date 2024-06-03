@@ -95,12 +95,7 @@ impl WorkerService {
 
     let worker_name = task.worker.clone();
     let dedicated = task.dedicated;
-    let task_run_info = TaskRunInfo {
-      task,
-      stop: Arc::new(Mutex::new(stop_rx)),
-      status: status_tx,
-      creation: Instant::now()
-    };
+    let task_run_info = TaskRunInfo::new(task, stop_rx, status_tx);
 
     if dedicated { // create a worker for dedicated work
       let info = self.get_worker_shared_run_info(&worker_name).await?;
