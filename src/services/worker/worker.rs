@@ -77,7 +77,7 @@ impl Worker {
           match worker.run_info.read().await.clone() {
             Some(run_info) => run_info,
             None => {
-              worker.tasks.0.send(task).await.expect("channel closed"); // prevent leaked tasks
+              worker.tasks.0.send(task).await.expect("closed channel"); // prevent leaked tasks
               return None
             }
           }
