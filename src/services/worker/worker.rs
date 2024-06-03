@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{atomic::AtomicIsize, Arc};
 
 use tokio::{sync::{mpsc, Mutex, RwLock}, time::Instant};
 
@@ -17,7 +17,9 @@ pub type SharedWorkerInfo = Arc<RwLock<Option<WorkerRunInfo>>>;
 #[derive(Clone)]
 pub struct Worker {
   run_info: SharedWorkerInfo,
-  tasks: (mpsc::Sender<TaskRunInfo>, Arc<Mutex<mpsc::Receiver<TaskRunInfo>>>)
+  tasks: (mpsc::Sender<TaskRunInfo>, Arc<Mutex<mpsc::Receiver<TaskRunInfo>>>),
+  done_tasks: Arc<AtomicIsize>,
+  stop_condition: Arc<Box<dyn Send + Sync + Fn(&Worker) -> bool>>
 }
 
 const WORKER_TASKS_CAPACITY: usize = 10;
@@ -28,7 +30,25 @@ impl Worker {
     Self {
       run_info,
       tasks: (sender, Arc::new(Mutex::new(receiver))),
+      done_tasks: Arc::new(AtomicIsize::new(-1)),
+      stop_condition: Arc::new(Box::new(|_| false))
     }
+  }
+
+  pub fn with_stop_condition<F>(run_info: SharedWorkerInfo, stop_condition: F) -> Self
+    where F : 'static + Send + Sync + Fn(&Worker) -> bool
+  {
+    let (sender, receiver) = mpsc::channel(WORKER_TASKS_CAPACITY);
+    Self {
+      run_info,
+      tasks: (sender, Arc::new(Mutex::new(receiver))),
+      done_tasks: Arc::new(AtomicIsize::new(-1)),
+      stop_condition: Arc::new(Box::new(stop_condition))
+    }
+  }
+
+  pub fn done_tasks_count(&self) -> isize {
+    self.done_tasks.load(std::sync::atomic::Ordering::Relaxed)
   }
 
   pub async fn queue_task(&self, task: TaskRunInfo) {
@@ -36,30 +56,35 @@ impl Worker {
   }
 
   pub async fn worker_loop(self) {
-    let tasks = self.tasks.clone();
-
     let _ = start_python_loop(move || {
-      let run_info = self.run_info.clone();
-      let (task_sender, task_receiver) = tasks.clone();
+      let worker = self.clone();
+      worker.done_tasks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
       async move {
+        if (worker.stop_condition)(&worker) {
+          return None
+        }
+
         let task = loop {
-          let task = task_receiver.lock().await.recv().await.expect("closed channel");
+          let task = worker.tasks.1.lock().await.recv().await.expect("closed channel");
           if !task.stopped().await {
             break task
           }
         };
+
         let run_info = {
-          match run_info.read().await.clone() {
+          match worker.run_info.read().await.clone() {
             Some(run_info) => run_info,
             None => {
-              task_sender.send(task).await.expect("channel closed"); // prevent leaked tasks
+              worker.tasks.0.send(task).await.expect("channel closed"); // prevent leaked tasks
               return None
             }
           }
         };
+
         Some((run_info, task))
       }
     }).await;
+    println!("worker ended")
   }
 }

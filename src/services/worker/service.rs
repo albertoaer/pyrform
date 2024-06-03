@@ -88,17 +88,29 @@ impl WorkerService {
     let (tx, rx) = watch::channel(TaskStatus::Pending);
 
     let worker_name = task.worker.clone();
-
+    let dedicated = task.dedicated;
     let task_run_info = TaskRunInfo { status: tx, task, stop: Arc::new(Mutex::new(stop)) };
 
-    {
+    if dedicated { // create a worker for dedicated work
+      let info = self.get_worker_shared_run_info(&worker_name).await?;
+      let worker = Worker::with_stop_condition(
+        info.clone(),
+        |worker| worker.done_tasks_count() > 0 // will die after one task
+      );
+      worker.queue_task(task_run_info).await;
+
+      tokio::spawn(worker.worker_loop());
+      return Ok(rx)
+    }
+
+    { // the worker is found
       if let Some(worker) = self.workers.lock().await.get(&worker_name) {
         worker.queue_task(task_run_info).await;
         return Ok(rx)
       }
     }
 
-    {
+    { // create a new worker
       let info = self.get_worker_shared_run_info(&worker_name).await?;
       let worker = Worker::new(info.clone());
       worker.queue_task(task_run_info).await;

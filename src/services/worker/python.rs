@@ -22,7 +22,7 @@ pub async fn start_python_loop<F, O>(mut next: F) -> anyhow::Result<()>
       let mut old_run_info: Option<WorkerRunInfo> = None;
 
       loop {
-        let (run_info, task_info) = match handle.block_on(next()) {
+        let (run_info, task_info) = match py.allow_threads(|| handle.block_on(next())) {
           Some(values) => values,
           None => return Ok(())
         };
@@ -37,6 +37,7 @@ pub async fn start_python_loop<F, O>(mut next: F) -> anyhow::Result<()>
 
         let task = Py::new(py, task_info.task_for_python())?;
         let result = func.call1(py, (task, ));
+
         let _ = task_info.set_status(match result {
           Ok(_) => TaskStatus::Done,
           Err(_) => TaskStatus::Fail,
