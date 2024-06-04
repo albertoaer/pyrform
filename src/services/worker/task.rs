@@ -9,6 +9,7 @@ use crate::model::{self, TaskStatus};
 #[pyclass]
 pub struct Task {
   worker: String,
+  function: String,
   title: Option<String>,
   dedicated: bool,
   args: Vec<String>
@@ -23,6 +24,11 @@ impl Task {
   #[getter]
   fn worker(&self) -> String {
     self.worker.clone()
+  }
+
+  #[getter]
+  fn function(&self) -> String {
+    self.function.clone()
   }
 
   #[getter]
@@ -45,6 +51,7 @@ impl From<model::Task> for Task {
   fn from(task: model::Task) -> Self {
     Self {
       worker: task.worker,
+      function: task.function,
       title: task.title,
       dedicated: task.dedicated,
       args: task.args,

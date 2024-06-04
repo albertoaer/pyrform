@@ -2,9 +2,15 @@ use std::time::Duration;
 
 use serde::{Serialize, Deserialize};
 
+fn task_function_default() -> String {
+  "worker".into()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Task {
   pub worker: String,
+  #[serde(default = "task_function_default")]
+  pub function: String,
   #[serde(default)]
   pub title: Option<String>,
   #[serde(default)]
