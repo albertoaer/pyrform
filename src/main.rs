@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
 
   let cors = CorsLayer::new().allow_origin(tower_http::cors::Any).allow_methods(tower_http::cors::Any);
 
-  let worker_service = WorkerService::new("./workers/")?;
+  let worker_service = WorkerService::new(&args.path)?;
 
   let mut app = Router::new()
     .nest("/task", routes::task::router(&worker_service));
@@ -27,8 +27,10 @@ async fn main() -> anyhow::Result<()> {
   }
   app = app.layer(cors);
 
-  let listener = tokio::net::TcpListener::bind(args.bind).await.unwrap();
+  let listener = tokio::net::TcpListener::bind(&args.bind).await.unwrap();
 
+  info!("workers path: {}", args.path);
+  info!("binded: {}", args.bind);
   info!("server started");
 
   Ok(axum::serve(listener, app).await.unwrap())

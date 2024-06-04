@@ -24,11 +24,14 @@ graph TB;
 ## Usage
 
 ```
-Usage: pyrform [OPTIONS]
+Usage: pyrform [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]  workers' source files [default: ./workers]
 
 Options:
   -b, --bind <BIND>   [default: 0.0.0.0:3000]
-      --edit-workers  expose the /worker endpoint
+  -e, --edit-workers  expose the /worker endpoint
   -h, --help          Print help
   -V, --version       Print version
 ```
