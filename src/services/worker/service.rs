@@ -116,7 +116,7 @@ impl WorkerService {
       if let Entry::Occupied(mut worker) = self.workers.lock().await.entry(worker_name.clone()) {
         {
           let worker = worker.get_mut();
-          if worker.should_be_on().await {
+          if worker.should_be_on().await && worker.is_on() {
             worker.queue_task(task_run_info).await;
             return result
           }

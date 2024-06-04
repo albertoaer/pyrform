@@ -1,7 +1,7 @@
-use std::sync::{atomic::AtomicIsize, Arc};
+use std::sync::{atomic::{AtomicIsize, AtomicUsize, Ordering}, Arc};
 
 use tokio::{sync::{mpsc, Mutex, RwLock}, time::Instant};
-use tracing::debug;
+use tracing::{debug, error};
 
 use super::{python::start_python_loop, task::TaskRunInfo};
 
@@ -19,7 +19,8 @@ pub type SharedWorkerInfo = Arc<RwLock<Option<WorkerRunInfo>>>;
 pub struct Worker {
   run_info: SharedWorkerInfo,
   tasks: (mpsc::Sender<TaskRunInfo>, Arc<Mutex<mpsc::Receiver<TaskRunInfo>>>),
-  done_tasks: Arc<AtomicIsize>,
+  done_tasks_counter: Arc<AtomicIsize>,
+  on_counter: Arc<AtomicUsize>,
   stop_condition: Arc<Box<dyn Send + Sync + Fn(&Worker) -> bool>>
 }
 
@@ -31,7 +32,8 @@ impl Worker {
     Self {
       run_info,
       tasks: (sender, Arc::new(Mutex::new(receiver))),
-      done_tasks: Arc::new(AtomicIsize::new(-1)),
+      done_tasks_counter: Arc::new(AtomicIsize::new(-1)),
+      on_counter: Arc::new(AtomicUsize::new(0)),
       stop_condition: Arc::new(Box::new(|_| false))
     }
   }
@@ -43,17 +45,22 @@ impl Worker {
     Self {
       run_info,
       tasks: (sender, Arc::new(Mutex::new(receiver))),
-      done_tasks: Arc::new(AtomicIsize::new(-1)),
+      done_tasks_counter: Arc::new(AtomicIsize::new(-1)),
+      on_counter: Arc::new(AtomicUsize::new(0)),
       stop_condition: Arc::new(Box::new(stop_condition))
     }
   }
 
   pub fn done_tasks_count(&self) -> isize {
-    self.done_tasks.load(std::sync::atomic::Ordering::Relaxed)
+    self.done_tasks_counter.load(std::sync::atomic::Ordering::Relaxed)
   }
 
   pub async fn should_be_on(&self) -> bool {
     self.run_info.read().await.is_some()
+  }
+
+  pub fn is_on(&self) -> bool {
+    self.on_counter.load(std::sync::atomic::Ordering::Relaxed) > 0
   }
 
   pub async fn queue_task(&self, task: TaskRunInfo) {
@@ -61,9 +68,11 @@ impl Worker {
   }
 
   pub async fn worker_loop(self) {
-    let _ = start_python_loop(move || {
+    let on_counter = self.on_counter.clone();
+    on_counter.fetch_add(1, Ordering::Relaxed);
+    if let Err(err) = start_python_loop(move || {
       let worker = self.clone();
-      worker.done_tasks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+      worker.done_tasks_counter.fetch_add(1, Ordering::Relaxed);
 
       async move {
         if (worker.stop_condition)(&worker) {
@@ -91,7 +100,11 @@ impl Worker {
 
         Some((run_info, task))
       }
-    }).await;
-    debug!("worker ended");
+    }).await {
+      error!("worker ended with error: {}", err.to_string());
+    } else {
+      debug!("worker ended correctly");
+    }
+    on_counter.fetch_sub(1, Ordering::Relaxed);
   }
 }
