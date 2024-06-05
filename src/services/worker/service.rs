@@ -3,12 +3,12 @@ use std::{collections::{hash_map::Entry, HashMap}, fs as fs_sync, ops::DerefMut,
 use itertools::Itertools;
 use notify::{Config, RecommendedWatcher, Watcher};
 use path_absolutize::Absolutize;
-use tokio::{fs, sync::{mpsc, oneshot, watch, Mutex, RwLock}, time::Instant};
-use tracing::debug;
+use tokio::{fs, select, sync::{broadcast, mpsc, oneshot, watch, Mutex, RwLock}, time::Instant};
+use tracing::{debug, error};
 
 use crate::model::{Task, TaskStatus, CreateWorkerData};
 
-use super::{task::TaskRunInfo, worker::{SharedWorkerInfo, Worker, WorkerRunInfo}};
+use super::{python::PythonWorkerLoop, task::TaskRunInfo, worker::{SharedWorkerInfo, Worker, WorkerRunInfo}};
 
 // does not check if file exists only if the extension is valid
 fn can_be_python_file(path: impl AsRef<Path>) -> bool {
@@ -26,8 +26,11 @@ fn get_worker_name(path: impl AsRef<Path>) -> Option<String> {
 pub struct WorkerService {
   directory: Arc<PathBuf>, // must never change
   workers_info: Arc<Mutex<HashMap<PathBuf, SharedWorkerInfo>>>,
-  workers: Arc<Mutex<HashMap<String, Worker>>>,
+  workers: Arc<Mutex<HashMap<String, Worker<PythonWorkerLoop>>>>,
+  task_sender: broadcast::Sender<TaskRunInfo>
 }
+
+const SERVICE_TASKS_CAPACITY: usize = 1000;
 
 impl WorkerService {
   /// TODO: allow recursive worker directory
@@ -47,9 +50,11 @@ impl WorkerService {
       directory: Arc::new(directory),
       workers_info: Arc::new(Mutex::new(HashMap::from_iter(worker_files))),
       workers: Arc::new(Mutex::new(HashMap::new())),
+      task_sender: broadcast::Sender::new(SERVICE_TASKS_CAPACITY)
     };
 
     tokio::spawn(service.clone().directory_watch_service());
+    tokio::spawn(service.clone().scheduler_service());
 
     Ok(service)
   }
@@ -88,6 +93,69 @@ impl WorkerService {
     }
   }
 
+  async fn scheduler_service(self) {
+    let mut receiver = self.task_sender.subscribe();
+
+    loop {
+      select! {
+        task = receiver.recv() => {
+          match task {
+            Ok(task_info) => self.launch_task(task_info).await,
+            Err(err) => error!("error receiving task: {}", err.to_string())
+          }
+        }
+      }
+    }
+  }
+
+  async fn launch_task(&self, task_info: TaskRunInfo) {
+    let status = task_info.status.clone();
+    if let Err(err) = self.perform_launch_task(task_info).await {
+      status.send(TaskStatus::Error { reason: err.to_string() }).expect("send status did not work");
+    }
+  }
+
+  async fn perform_launch_task(&self, task_info: TaskRunInfo) -> anyhow::Result<()> {
+    let task = task_info.task.clone();
+
+    if task.dedicated { // create a worker for dedicated work
+      let info = self.get_worker_shared_run_info(&task.worker).await?;
+      let worker: Worker<PythonWorkerLoop> = Worker::with_stop_condition(
+        info.clone(),
+        self.task_sender.clone(),
+        |worker| worker.done_tasks_count() > 0 // will die after one task
+      );
+      worker.queue_task(task_info).await;
+
+      tokio::spawn(worker.worker_loop());
+      return Ok(())
+    }
+
+    { // the worker is found
+      if let Entry::Occupied(mut worker) = self.workers.lock().await.entry(task.worker.clone()) {
+        {
+          let worker = worker.get_mut();
+          if worker.should_be_on().await && worker.is_on() {
+            worker.queue_task(task_info).await;
+            return Ok(())
+          }
+        }
+        worker.remove_entry(); // remove if it's not on
+      }
+    }
+
+    { // create a new worker
+      let info = self.get_worker_shared_run_info(&task.worker).await?;
+      let worker = Worker::new(info.clone(), self.task_sender.clone());
+      worker.queue_task(task_info).await;
+      
+      tokio::spawn(worker.clone().worker_loop());
+      self.workers.lock().await.insert(task.worker.clone(), worker);
+    }
+
+    Ok(())
+  }
+
   /// queues a task
   /// if `Ok` is returned with two channels: `oneshot::Sender<()>` is the signal to stop the task and
   /// `watch::Receiver<TaskStatus>` provides the current task status
@@ -96,43 +164,8 @@ impl WorkerService {
     let (stop_tx, stop_rx) = oneshot::channel();
     let result = Ok((stop_tx, status_rx));
 
-    let worker_name = task.worker.clone();
-    let dedicated = task.dedicated;
-    let task_run_info = TaskRunInfo::new(task, stop_rx, status_tx);
-
-    if dedicated { // create a worker for dedicated work
-      let info = self.get_worker_shared_run_info(&worker_name).await?;
-      let worker = Worker::with_stop_condition(
-        info.clone(),
-        |worker| worker.done_tasks_count() > 0 // will die after one task
-      );
-      worker.queue_task(task_run_info).await;
-
-      tokio::spawn(worker.worker_loop());
-      return result
-    }
-
-    { // the worker is found
-      if let Entry::Occupied(mut worker) = self.workers.lock().await.entry(worker_name.clone()) {
-        {
-          let worker = worker.get_mut();
-          if worker.should_be_on().await && worker.is_on() {
-            worker.queue_task(task_run_info).await;
-            return result
-          }
-        }
-        worker.remove_entry(); // remove if it's not on
-      }
-    }
-
-    { // create a new worker
-      let info = self.get_worker_shared_run_info(&worker_name).await?;
-      let worker = Worker::new(info.clone());
-      worker.queue_task(task_run_info).await;
-      
-      tokio::spawn(worker.clone().worker_loop());
-      self.workers.lock().await.insert(worker_name, worker);
-    }
+    let task_info = TaskRunInfo::new(task, stop_rx, status_tx);
+    self.task_sender.send(task_info)?;
 
     result
   }
@@ -185,8 +218,8 @@ impl WorkerService {
     let path = path.and_then(|x| Some(x.as_ref().into())).unwrap_or(self.get_worker_path(&name));
     let source = fs::read_to_string(&path).await?;
     Ok(WorkerRunInfo {
-      worker_name: name.as_ref().to_string(),
-      worker_path: path.to_string_lossy().to_string(),
+      name: name.as_ref().to_string(),
+      path: path.to_string_lossy().to_string(),
       source,
       instant: Instant::now()
     })

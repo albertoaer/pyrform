@@ -1,11 +1,13 @@
 use std::time::Duration;
 
 use serde::{Serialize, Deserialize};
+use serde_with::{serde_as, DurationSeconds};
 
 fn task_function_default() -> String {
   "worker".into()
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Task {
   pub worker: String,
@@ -16,8 +18,10 @@ pub struct Task {
   #[serde(default)]
   pub dedicated: bool,
   #[serde(default)]
-  pub args: Vec<String>
-  // TODO: Cron
+  pub args: Vec<String>,
+  #[serde(default)]
+  #[serde_as(as = "DurationSeconds<f64>")]
+  pub delay: Duration,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -25,22 +29,28 @@ pub struct Task {
 pub enum TaskStatus {
   Pending, // awaiting to be run for first time
   Running, // doing work
-  Scheduled, // not done, awaiting to be run
   Done {
     outcome: String,
     duration_total: Duration,
-    duration_execution: Duration
-  }, // no more work to do
+    duration_execution: Duration,
+    queue_again: bool
+  }, // task finished
   Fail {
     reason: String,
     duration_total: Duration,
     duration_execution: Duration
   }, // failed during execution
+  Error {
+    reason: String
+  }, // an error occurred and was not caused during task execution 
   Cancelled // the task has been cancelled (might have not ended the work or even started)
 }
 
 impl TaskStatus {
   pub fn can_be_cancelled(&self) -> bool {
-    matches!(self, Self::Pending | Self::Running | Self::Scheduled)
+    match &self {
+      Self::Pending | Self::Running | Self::Done { queue_again: true, .. } => true,
+      _ => false
+    }
   }
 }

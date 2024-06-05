@@ -13,7 +13,8 @@ pub struct Task {
   title: Option<String>,
   dedicated: bool,
   args: Vec<String>,
-  prevent_done: bool
+  delay: Duration,
+  queue_again: bool
 }
 
 #[pymethods]
@@ -73,12 +74,22 @@ impl Task {
   }
 
   #[getter]
-  pub fn is_prevent_done(&self) -> bool {
-    self.prevent_done
+  pub fn delay(&self) -> Duration {
+    self.delay.clone()
   }
 
-  pub fn prevent_done(&mut self, prevent: Option<bool>) {
-    self.prevent_done = prevent.unwrap_or(true)
+  #[setter]
+  pub fn set_delay(&mut self, delay: Duration) {
+    self.delay = delay
+  }
+
+  #[getter]
+  pub fn is_queue_again(&self) -> bool {
+    self.queue_again
+  }
+
+  pub fn queue_again(&mut self, prevent: Option<bool>) {
+    self.queue_again = prevent.unwrap_or(true)
   }
 }
 
@@ -90,7 +101,8 @@ impl From<model::Task> for Task {
       title: task.title,
       dedicated: task.dedicated,
       args: task.args,
-      prevent_done: false
+      delay: task.delay,
+      queue_again: false
     }
   }
 }
@@ -102,12 +114,13 @@ impl From<Task> for model::Task {
       function: task.function,
       title: task.title,
       dedicated: task.dedicated,
+      delay: task.delay,
       args: task.args
     }
   }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TaskRunInfo {
   pub task: Arc<model::Task>,
   pub stop: Arc<Mutex<oneshot::Receiver<()>>>,
