@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use axum::{extract::{Path, State}, http::StatusCode, response::{IntoResponse, Response}, Json};
+use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::model::Task;
@@ -12,7 +13,7 @@ pub async fn list_tasks(State(TaskState { queued, .. }): State<TaskState>) -> im
     queued.lock().await.iter().map(|(name, manager)| (name.to_string(), manager.status.borrow().clone()))
   );
 
-  Json::from(serde_json::json!(data))
+  (StatusCode::OK, Json(json!(data)))
 }
 
 pub async fn queue_task(
@@ -21,9 +22,7 @@ pub async fn queue_task(
 ) -> impl IntoResponse {
   let (stop, status) = match worker_service.queue_task(task.clone()).await {
     Ok(channels) => channels,
-    Err(err) => return Json(serde_json::json!({
-      "error": err.to_string()
-    })),
+    Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string() }))),
   };
 
   let uuid = Uuid::new_v4();
@@ -36,33 +35,27 @@ pub async fn queue_task(
     stop: Some(stop)
   });
 
-  Json(serde_json::json!({
-    "id": id,
-    "info": info
-  }))
+  (StatusCode::OK, Json(json!({ "id": id, "info": info })))
 }
 
 pub async fn get_task(
   State(TaskState { queued, .. }): State<TaskState>,
   Path(id): Path<String>
-) -> Response {
+) -> impl IntoResponse {
   let status = queued.lock().await.iter()
     .find(|(task_id, _)| task_id.to_string() == id)
     .and_then(|(_, manager)| Some(manager.status.borrow().clone()));
 
   match status {
-    Some(status) => Json(serde_json::json!({
-      "id": id,
-      "info": status
-    })).into_response(),
-    None => (StatusCode::NOT_FOUND, format!("{} not found", id)).into_response(),
+    Some(status) => (StatusCode::OK, Json(json!({ "id": id, "info": status }))),
+    None => (StatusCode::NOT_FOUND, Json(json!({ "error": format!("{} not found", id) }))),
   }
 }
 
 pub async fn cancel_task(
   State(TaskState { queued, .. }): State<TaskState>,
   Path(id): Path<String>
-) -> Response {
+) -> impl IntoResponse {
   let mut lock = queued.lock().await;
   let stop = lock.iter_mut()
     .find(|(task_id, _)| task_id.to_string() == id)
@@ -72,10 +65,8 @@ pub async fn cancel_task(
     Some((status, stop)) if status.can_be_cancelled() => {
       let _ = stop.send(());
 
-      Json(serde_json::json!({
-        "result": "accepted"
-      })).into_response()
+      (StatusCode::OK, Json(json!({ "result": "accepted" })))
     },
-    _ => (StatusCode::NOT_FOUND, format!("{} not found or cannot be cancelled", id)).into_response(),
+    _ => (StatusCode::NOT_FOUND, Json(json!({ "error": format!("{} not found or cannot be cancelled", id)}))),
   }
 }

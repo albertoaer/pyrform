@@ -173,7 +173,7 @@ impl WorkerService {
   pub async fn add_worker(&self, worker: CreateWorkerData) -> anyhow::Result<()> {
     let path = self.get_worker_path(&worker.name);
     if path.is_file() && !worker.replace {
-      return Err(anyhow::anyhow!("the worker ({}) already exists and `replace` was negated", worker.name))
+      return Err(anyhow::anyhow!("the worker ({}) already exists. Use 'replace' to force the operation", worker.name))
     }
     fs::write(path, worker.source).await?;
     Ok(())
