@@ -1,11 +1,12 @@
 use std::future::Future;
 
-use pyo3::{types::PyModule, Py, Python};
+use pyo3::{types::{PyAnyMethods, PyModule, PyModuleMethods}, Py, Python};
 use tokio::{runtime::Handle, task};
+use tracing::info;
 
 use crate::model::TaskStatus;
 
-use super::{task::TaskRunInfo, worker::WorkerRunInfo};
+use super::{task::{Task, TaskRunInfo}, worker::WorkerRunInfo};
 
 pub async fn start_python_loop<F, O>(mut next: F) -> anyhow::Result<()>
   where F: (FnMut() -> O) + Send + 'static, O: Future<Output = Option<(WorkerRunInfo, TaskRunInfo)>>
@@ -14,7 +15,7 @@ pub async fn start_python_loop<F, O>(mut next: F) -> anyhow::Result<()>
 
   task::spawn_blocking(move || {
     Python::with_gil(|py| -> anyhow::Result<()> {
-      let mut module = Python::None(py);
+      let mut module = PyModule::new_bound(py, "empty module")?;
       let mut old_run_info: Option<WorkerRunInfo> = None;
 
       loop {
@@ -30,7 +31,8 @@ pub async fn start_python_loop<F, O>(mut next: F) -> anyhow::Result<()>
             &run_info.source,
             &run_info.worker_path,
             &run_info.worker_name
-          )?.into();
+          )?;
+          module.add_class::<Task>()?;
         }
         old_run_info = Some(run_info.clone());
 
@@ -38,9 +40,13 @@ pub async fn start_python_loop<F, O>(mut next: F) -> anyhow::Result<()>
 
         let task = Py::new(py, task_info.task_for_python())?;
         task_info.set_execution_now();
-        let result = module.getattr(py, task_info.task.function.as_str())?.call1(py, (task, ));
-
+        let result = module.getattr(task_info.task.function.as_str())?.call1((&task, ));
         let (duration_total, duration_execution) = task_info.get_duration_now();
+
+        if task.borrow(py).is_prevent_done() {
+          info!("task should be queued again")
+        }
+
         let _ = task_info.set_status(match result {
           Ok(outcome) => TaskStatus::Done {
             outcome: outcome.to_string(), duration_total, duration_execution

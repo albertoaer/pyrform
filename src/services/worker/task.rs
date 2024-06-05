@@ -12,38 +12,73 @@ pub struct Task {
   function: String,
   title: Option<String>,
   dedicated: bool,
-  args: Vec<String>
+  args: Vec<String>,
+  prevent_done: bool
 }
 
 #[pymethods]
 impl Task {
-  fn __repr__(&self) -> String {
+  pub fn __repr__(&self) -> String {
     format!("TASK['{}']", self.title.clone().unwrap_or("no title".to_string()))
   }
 
   #[getter]
-  fn worker(&self) -> String {
+  pub fn worker(&self) -> String {
     self.worker.clone()
   }
 
+  #[setter]
+  pub fn set_worker(&mut self, worker: String) {
+    self.worker = worker
+  }
+
   #[getter]
-  fn function(&self) -> String {
+  pub fn function(&self) -> String {
     self.function.clone()
   }
 
+  #[setter]
+  pub fn set_function(&mut self, function: String) {
+    self.function = function
+  }
+
   #[getter]
-  fn title(&self) -> Option<String> {
+  pub fn title(&self) -> Option<String> {
     self.title.clone()
   }
 
-  #[getter]
-  fn dedicated(&self) -> bool {
-    self.dedicated
+  #[setter]
+  pub fn set_title(&mut self, title: Option<String>) {
+    self.title = title
   }
 
   #[getter]
-  fn args(&self) -> Vec<String> {
+  pub fn dedicated(&self) -> bool {
+    self.dedicated
+  }
+
+  #[setter]
+  pub fn set_dedicated(&mut self, title: Option<String>) {
+    self.title = title
+  }
+
+  #[getter]
+  pub fn args(&self) -> Vec<String> {
     self.args.clone()
+  }
+
+  #[setter]
+  pub fn set_args(&mut self, args: Vec<String>) {
+    self.args = args
+  }
+
+  #[getter]
+  pub fn is_prevent_done(&self) -> bool {
+    self.prevent_done
+  }
+
+  pub fn prevent_done(&mut self, prevent: Option<bool>) {
+    self.prevent_done = prevent.unwrap_or(true)
   }
 }
 
@@ -55,13 +90,26 @@ impl From<model::Task> for Task {
       title: task.title,
       dedicated: task.dedicated,
       args: task.args,
+      prevent_done: false
+    }
+  }
+}
+
+impl From<Task> for model::Task {
+  fn from(task: Task) -> Self {
+    Self {
+      worker: task.worker,
+      function: task.function,
+      title: task.title,
+      dedicated: task.dedicated,
+      args: task.args
     }
   }
 }
 
 #[derive(Clone)]
 pub struct TaskRunInfo {
-  pub task: model::Task,
+  pub task: Arc<model::Task>,
   pub stop: Arc<Mutex<oneshot::Receiver<()>>>,
   pub status: watch::Sender<TaskStatus>,
   pub creation: Instant,
@@ -71,7 +119,7 @@ pub struct TaskRunInfo {
 impl TaskRunInfo {
   pub fn new(task: model::Task, stop: oneshot::Receiver<()>, status: watch::Sender<TaskStatus>) -> Self {
     Self {
-      task,
+      task: Arc::new(task),
       stop: Arc::new(Mutex::new(stop)),
       status,
       creation: Instant::now(),
@@ -79,12 +127,17 @@ impl TaskRunInfo {
     }
   }
 
+  pub fn replace_task(mut self, task: model::Task) -> Self {
+    self.task = Arc::new(task);
+    self
+  }
+
   pub fn set_execution_now(&mut self) {
     self.execution = Instant::now()
   }
 
   pub fn task_for_python(&self) -> Task {
-    self.task.clone().into()
+    (*self.task).clone().into()
   }
 
   pub async fn stopped(&self) -> bool {
