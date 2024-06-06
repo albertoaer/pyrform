@@ -2,7 +2,7 @@ use pyo3::{types::{PyAnyMethods, PyModule, PyModuleMethods}, Py, Python};
 use tokio::{runtime::Handle, task};
 use tracing::debug;
 
-use crate::model::TaskStatus;
+use crate::model::{self, TaskStatus};
 
 use super::{task::Task, worker::{WorkerLoop, WorkerRunInfo}};
 
@@ -57,8 +57,12 @@ impl WorkerLoop for PythonWorkerLoop {
           });
 
           if queue_again {
-            let updated_task = task_info.replace_task(task.extract::<Task>(py)?.into());
-            py.allow_threads(|| handle.block_on(worker.service_queue_task(updated_task)));
+            let extracted_task: model::Task = task.extract::<Task>(py)?.into();
+            py.allow_threads(|| {
+              let mut updated_task_info = task_info.replace_task(extracted_task);
+              updated_task_info.set_creation_now();
+              handle.block_on(worker.service_queue_task(updated_task_info));
+            });
           }
         }
       })

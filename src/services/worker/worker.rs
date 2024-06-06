@@ -1,6 +1,6 @@
 use std::sync::{atomic::{AtomicIsize, AtomicUsize, Ordering}, Arc};
 
-use tokio::{sync::{broadcast, mpsc, Mutex, RwLock}, time::Instant};
+use tokio::{sync::{mpsc, Mutex, RwLock}, time::Instant};
 use tracing::{debug, error};
 
 use super::task::TaskRunInfo;
@@ -26,13 +26,13 @@ pub struct Worker<T : WorkerLoop + ?Sized> {
   done_tasks_counter: Arc<AtomicIsize>,
   on_counter: Arc<AtomicUsize>,
   stop_condition: Arc<Box<dyn Send + Sync + Fn(&Worker<T>) -> bool>>,
-  task_sender: broadcast::Sender<TaskRunInfo>
+  task_sender: mpsc::Sender<TaskRunInfo>
 }
 
 const WORKER_TASKS_CAPACITY: usize = 10;
 
 impl<T : WorkerLoop + ?Sized + Clone> Worker<T> {
-  pub fn new(run_info: SharedWorkerInfo, task_sender: broadcast::Sender<TaskRunInfo>) -> Self {
+  pub fn new(run_info: SharedWorkerInfo, task_sender: mpsc::Sender<TaskRunInfo>) -> Self {
     let (sender, receiver) = mpsc::channel(WORKER_TASKS_CAPACITY);
     Self {
       run_info,
@@ -46,7 +46,7 @@ impl<T : WorkerLoop + ?Sized + Clone> Worker<T> {
 
   pub fn with_stop_condition<F>(
     run_info: SharedWorkerInfo,
-    task_sender: broadcast::Sender<TaskRunInfo>,
+    task_sender: mpsc::Sender<TaskRunInfo>,
     stop_condition: F
   ) -> Self where F : 'static + Send + Sync + Fn(&Worker<T>) -> bool
   {
@@ -80,7 +80,7 @@ impl<T : WorkerLoop + ?Sized + Clone> Worker<T> {
 
   /// queue task back to the service
   pub async fn service_queue_task(&self, task: TaskRunInfo) {
-    self.task_sender.send(task).expect("service queue task did not work");
+    self.task_sender.send(task).await.expect("service queue task did not work");
   }
 
   pub async fn next_task(&self) -> Option<(WorkerRunInfo, TaskRunInfo)> {

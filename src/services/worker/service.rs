@@ -1,10 +1,11 @@
-use std::{collections::{hash_map::Entry, HashMap}, fs as fs_sync, ops::DerefMut, path::{Path, PathBuf}, sync::Arc};
+use std::{collections::{hash_map::Entry, HashMap}, fs as fs_sync, ops::DerefMut, path::{Path, PathBuf}, sync::Arc, time::Duration};
 
+use futures::future::join_all;
 use itertools::Itertools;
 use notify::{Config, RecommendedWatcher, Watcher};
 use path_absolutize::Absolutize;
-use tokio::{fs, select, sync::{broadcast, mpsc, oneshot, watch, Mutex, RwLock}, time::Instant};
-use tracing::{debug, error};
+use tokio::{fs, select, sync::{mpsc, oneshot, watch, Mutex, RwLock}, time::{self, Instant}};
+use tracing::{debug, info, trace};
 
 use crate::model::{Task, TaskStatus, CreateWorkerData};
 
@@ -27,7 +28,7 @@ pub struct WorkerService {
   directory: Arc<PathBuf>, // must never change
   workers_info: Arc<Mutex<HashMap<PathBuf, SharedWorkerInfo>>>,
   workers: Arc<Mutex<HashMap<String, Worker<PythonWorkerLoop>>>>,
-  task_sender: broadcast::Sender<TaskRunInfo>
+  task_sender: mpsc::Sender<TaskRunInfo>
 }
 
 const SERVICE_TASKS_CAPACITY: usize = 1000;
@@ -46,15 +47,17 @@ impl WorkerService {
       }
     });
 
+    let (task_sender, task_receiver) = mpsc::channel(SERVICE_TASKS_CAPACITY);
+
     let service = WorkerService {
       directory: Arc::new(directory),
       workers_info: Arc::new(Mutex::new(HashMap::from_iter(worker_files))),
       workers: Arc::new(Mutex::new(HashMap::new())),
-      task_sender: broadcast::Sender::new(SERVICE_TASKS_CAPACITY)
+      task_sender
     };
 
     tokio::spawn(service.clone().directory_watch_service());
-    tokio::spawn(service.clone().scheduler_service());
+    tokio::spawn(service.clone().scheduler_service(task_receiver));
 
     Ok(service)
   }
@@ -93,16 +96,42 @@ impl WorkerService {
     }
   }
 
-  async fn scheduler_service(self) {
-    let mut receiver = self.task_sender.subscribe();
+  async fn scheduler_service(self, mut task_receiver: mpsc::Receiver<TaskRunInfo>) {
+    let mut delayed_tasks: Vec<TaskRunInfo> = Vec::new();
+    let min_delay = time::sleep(Duration::MAX);
+
+    tokio::pin!(min_delay);
 
     loop {
       select! {
-        task = receiver.recv() => {
-          match task {
-            Ok(task_info) => self.launch_task(task_info).await,
-            Err(err) => error!("error receiving task: {}", err.to_string())
+        task = task_receiver.recv() => match task {
+          Some(task_info) if task_info.task.delay.is_zero() => self.launch_task(task_info).await,
+          Some(task_info) => {
+            let idx = delayed_tasks.binary_search_by(|item| item.task.delay.cmp(&task_info.task.delay))
+              .unwrap_or_else(|e| e);
+            if idx == 0 {
+              min_delay.as_mut().reset(Instant::now() + task_info.task.delay);
+            }
+            delayed_tasks.insert(idx, task_info);
           }
+          None => {
+            info!("error receiving task");
+            break;
+          }
+        },
+        () = &mut min_delay => {
+          let now = Instant::now();
+          let (ready, delayed): (Vec<_>, Vec<_>) = delayed_tasks.into_iter()
+            .partition(|item| item.creation + item.task.delay < now);
+          trace!("ready: {}, delayed: {}", ready.len(), delayed.len());
+
+          delayed_tasks = delayed;
+
+          min_delay.as_mut().reset(
+            Instant::now() + delayed_tasks.first()
+              .and_then(|x| Some(x.task.delay)).unwrap_or(Duration::from_secs(86400 * 365 * 30))
+          );
+          join_all(ready.into_iter().map(|x| self.launch_task(x))).await;
         }
       }
     }
@@ -165,7 +194,7 @@ impl WorkerService {
     let result = Ok((stop_tx, status_rx));
 
     let task_info = TaskRunInfo::new(task, stop_rx, status_tx);
-    self.task_sender.send(task_info)?;
+    self.task_sender.send(task_info).await?;
 
     result
   }

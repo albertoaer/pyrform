@@ -145,6 +145,10 @@ impl TaskRunInfo {
     self
   }
 
+  pub fn set_creation_now(&mut self) {
+    self.creation = Instant::now()
+  }
+
   pub fn set_execution_now(&mut self) {
     self.execution = Instant::now()
   }
