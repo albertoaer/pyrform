@@ -1,7 +1,8 @@
 use axum::Router;
 use clap::Parser;
 use services::worker::WorkerService;
-use tower_http::cors::CorsLayer;
+use tower::ServiceBuilder;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{info, Level};
 
 mod model;
@@ -25,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
   if args.edit_workers {
     app = app.nest("/worker", routes::worker::router(&worker_service));
   }
-  app = app.layer(cors);
+  app = app.layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()).layer(cors));
 
   let listener = tokio::net::TcpListener::bind(&args.bind).await.unwrap();
 
