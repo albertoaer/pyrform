@@ -1,72 +1,89 @@
-use pyo3::{types::{PyAnyMethods, PyModule, PyModuleMethods}, Py, Python};
+use pyo3::{types::{PyAnyMethods, PyModule, PyModuleMethods}, Bound, Py, Python};
 use tokio::{runtime::Handle, task};
 use tracing::debug;
 
 use crate::model::{self, TaskStatus};
 
-use super::{task::Task, worker::{WorkerLoop, WorkerRunInfo}};
+use super::{task::Task, worker::{IntoWorkerTaskResult, Worker, WorkerLoop, WorkerRunInfo, WorkerTaskResult}};
 
 #[derive(Clone, Copy)]
 pub struct PythonWorkerLoop;
 
+fn module_from_run_info<'py>(py: Python<'py>, run_info: &WorkerRunInfo) -> anyhow::Result<Bound<'py, PyModule>> {
+  let module = PyModule::from_code_bound(
+    py,
+    &run_info.source,
+    &run_info.path,
+    &run_info.name
+  )?;
+  module.add_class::<Task>()?;
+  Ok(module)
+}
+
 impl WorkerLoop for PythonWorkerLoop {
-  async fn start_loop(worker: super::worker::Worker<Self>) -> anyhow::Result<()> {
+  async fn start_loop(worker: Worker<Self>) -> WorkerTaskResult<()> {
     let handle = Handle::current();
 
     task::spawn_blocking(move || {
-      Python::with_gil(|py| -> anyhow::Result<()> {
-        let mut module = PyModule::new_bound(py, "empty module")?;
-        let mut old_run_info: Option<WorkerRunInfo> = None;
+      Python::with_gil(|py| -> WorkerTaskResult<()> {
+        // TODO: register in the path the module directory
+
+        let (mut run_info, mut task_info) = match py.allow_threads(|| handle.block_on(worker.next_task())) {
+          Some(values) => values,
+          None => return Ok(())
+        };
+
+        let mut module = module_from_run_info(py, &run_info).worker_task_error(Some(&run_info), Some(&task_info))?;
 
         loop {
-          let (run_info, mut task_info) = match py.allow_threads(|| handle.block_on(worker.next_task())) {
-            Some(values) => values,
-            None => return Ok(())
-          };
-
           debug!("[worker:{}] next task with title: {:?}", run_info.name, task_info.task.title);
-
-          let updated_run_info = old_run_info.and_then(|old| Some(old != run_info)).unwrap_or(true);
-          if updated_run_info {
-            module = PyModule::from_code_bound(
-              py,
-              &run_info.source,
-              &run_info.path,
-              &run_info.name
-            )?;
-            module.add_class::<Task>()?;
-          }
-          old_run_info = Some(run_info.clone());
 
           task_info.set_status(TaskStatus::Running);
 
-          let task = Py::new(py, task_info.task_for_python())?;
+          let task = Py::new(py, task_info.task_for_python())
+            .worker_task_error(Some(&run_info), Some(&task_info))?;
+
+          let function = module.getattr(task_info.task.function.as_str())
+            .worker_task_error(Some(&run_info), Some(&task_info))?;
+          
           task_info.set_execution_now();
-          let result = module.getattr(task_info.task.function.as_str())?.call1((&task, ));
+          let outcome = function.call1((&task, )).worker_task_fail(Some(&run_info), Some(&task_info))?;
           let (duration_total, duration_execution) = task_info.get_duration_now();
 
           let queue_again = task.borrow(py).is_queue_again();
-
-          let _ = task_info.set_status(match result {
-            Ok(outcome) => TaskStatus::Done {
-              outcome: outcome.to_string(), duration_total, duration_execution, queue_again
-            },
-            Err(reason) => TaskStatus::Fail {
-              reason: reason.to_string(), duration_total, duration_execution
-            },
+          let _ = task_info.set_status(TaskStatus::Done {
+            outcome: outcome.to_string(), duration_total, duration_execution, queue_again
           });
 
-          if queue_again {
-            let extracted_task: model::Task = task.extract::<Task>(py)?.into();
-            py.allow_threads(|| {
-              let mut updated_task_info = task_info.replace_task(extracted_task);
-              updated_task_info.set_creation_now();
-              handle.block_on(worker.service_queue_task(updated_task_info));
-            });
+          let queue_again = if queue_again {
+            let extracted_task: model::Task = task.extract::<Task>(py)
+              .worker_task_error(Some(&run_info), Some(&task_info))?.into();
+            let mut updated_task_info = task_info.replace_task(extracted_task);
+            updated_task_info.set_creation_now();
+            Some(updated_task_info)
+          } else { None };
+
+          let next = py.allow_threads(|| handle.block_on(async {
+            if let Some(queue_again) = queue_again {
+              worker.service_queue_task(queue_again).await;
+            }
+          
+            worker.next_task().await
+          }));
+          match next {
+            Some((new_run_info, new_task_info)) => {
+              task_info = new_task_info;
+            
+              if new_run_info != run_info {
+                module = module_from_run_info(py, &run_info).worker_task_error(Some(&run_info), Some(&task_info))?;
+                run_info = new_run_info;
+              }  
+            },
+            None => return Ok(())
           }
         }
       })
-    }).await??;
+    }).await.worker_task_error(None, None)??;
     Ok(())
   }
 }

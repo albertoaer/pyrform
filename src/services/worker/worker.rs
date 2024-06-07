@@ -3,6 +3,8 @@ use std::sync::{atomic::{AtomicIsize, AtomicUsize, Ordering}, Arc};
 use tokio::{sync::{mpsc, Mutex, RwLock}, time::Instant};
 use tracing::{debug, error};
 
+use crate::model::TaskStatus;
+
 use super::task::TaskRunInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,8 +17,42 @@ pub struct WorkerRunInfo {
 
 pub type SharedWorkerInfo = Arc<RwLock<Option<WorkerRunInfo>>>;
 
+pub struct WorkerTaskError {
+  pub other_error: anyhow::Error,
+  pub run_info: Option<WorkerRunInfo>,
+  pub task_info: Option<TaskRunInfo>,
+  pub fail: bool // fail means that the error what expecific during task execution time
+}
+
+pub type WorkerTaskResult<T> = Result<T, WorkerTaskError>;
+
+pub trait IntoWorkerTaskResult<T> {
+  fn worker_task_fail(self, run_info: Option<&WorkerRunInfo>, task_info: Option<&TaskRunInfo>) -> WorkerTaskResult<T>;
+  fn worker_task_error(self, run_info: Option<&WorkerRunInfo>, task_info: Option<&TaskRunInfo>) -> WorkerTaskResult<T>;
+}
+
+impl<T, E> IntoWorkerTaskResult<T> for Result<T, E> where E : Into<anyhow::Error> {
+  fn worker_task_fail(self, run_info: Option<&WorkerRunInfo>, task_info: Option<&TaskRunInfo>) -> WorkerTaskResult<T> {
+    self.map_err(|err| WorkerTaskError {
+      other_error: err.into(),
+      run_info: run_info.map(|x| x.clone()),
+      task_info: task_info.map(|x| x.clone()),
+      fail: true
+    })
+  }
+
+  fn worker_task_error(self, run_info: Option<&WorkerRunInfo>, task_info: Option<&TaskRunInfo>) -> WorkerTaskResult<T> {
+    self.map_err(|err| WorkerTaskError {
+      other_error: err.into(),
+      run_info: run_info.map(|x| x.clone()),
+      task_info: task_info.map(|x| x.clone()),
+      fail: false
+    })
+  }
+}
+
 pub trait WorkerLoop {
-  async fn start_loop(worker: Worker<Self>) -> anyhow::Result<()>;
+  async fn start_loop(worker: Worker<Self>) -> WorkerTaskResult<()>;
 }
 
 #[derive(Clone)]
@@ -112,7 +148,17 @@ impl<T : WorkerLoop + ?Sized + Clone> Worker<T> {
     let on_counter = self.on_counter.clone();
     on_counter.fetch_add(1, Ordering::Relaxed);
     if let Err(err) = T::start_loop(self).await {
-      error!("worker ended with error: {}", err.to_string());
+      if let Some(task_info) = err.task_info {
+
+        let _ = task_info.status.send(if err.fail {
+          let (duration_total, duration_execution) = task_info.get_duration_now();
+          TaskStatus::Fail { reason: err.other_error.to_string(), duration_total, duration_execution }
+        } else {
+          TaskStatus::Error { reason: err.other_error.to_string() }
+        });
+
+      }
+      error!("worker ended with error: {}", err.other_error.to_string());
     } else {
       debug!("worker ended correctly");
     }
