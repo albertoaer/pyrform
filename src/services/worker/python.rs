@@ -1,4 +1,6 @@
-use pyo3::{types::{PyAnyMethods, PyModule, PyModuleMethods}, Bound, Py, Python};
+use std::path::Path;
+
+use pyo3::{types::{PyAnyMethods, PyList, PyListMethods, PyModule, PyModuleMethods}, Bound, Py, Python};
 use tokio::{runtime::Handle, task};
 use tracing::debug;
 
@@ -20,19 +22,33 @@ fn module_from_run_info<'py>(py: Python<'py>, run_info: &WorkerRunInfo) -> anyho
   Ok(module)
 }
 
+fn config_path(py: Python, run_info: &WorkerRunInfo) -> WorkerTaskResult<()> {
+  let path: &Path = run_info.path.as_ref();
+  if let Some(path_parent) = path.parent() {
+    let syspath = py.import_bound("sys")
+      .and_then(|sys| sys.getattr("path"))
+      .and_then(|list| Ok(list.downcast_into::<PyList>().unwrap()))
+      .worker_task_error(Some(run_info), None)?;
+
+    if !syspath.contains(path_parent).worker_task_error(Some(run_info), None)? {
+      syspath.append(path_parent).worker_task_error(Some(run_info), None)?;
+    }
+  }
+  Ok(())
+}
+
 impl WorkerLoop for PythonWorkerLoop {
   async fn start_loop(worker: Worker<Self>) -> WorkerTaskResult<()> {
     let handle = Handle::current();
 
     task::spawn_blocking(move || {
       Python::with_gil(|py| -> WorkerTaskResult<()> {
-        // TODO: register in the path the module directory
-
         let (mut run_info, mut task_info) = match py.allow_threads(|| handle.block_on(worker.next_task())) {
           Some(values) => values,
           None => return Ok(())
         };
 
+        config_path(py, &run_info)?;
         let mut module = module_from_run_info(py, &run_info).worker_task_error(Some(&run_info), Some(&task_info))?;
 
         loop {
@@ -75,9 +91,10 @@ impl WorkerLoop for PythonWorkerLoop {
               task_info = new_task_info;
             
               if new_run_info != run_info {
-                module = module_from_run_info(py, &run_info).worker_task_error(Some(&run_info), Some(&task_info))?;
                 run_info = new_run_info;
-              }  
+                config_path(py, &run_info)?;
+                module = module_from_run_info(py, &run_info).worker_task_error(Some(&run_info), Some(&task_info))?;
+              }
             },
             None => return Ok(())
           }
