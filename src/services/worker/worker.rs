@@ -1,6 +1,6 @@
 use std::sync::{atomic::{AtomicIsize, AtomicUsize, Ordering}, Arc};
 
-use tokio::{sync::{mpsc, Mutex, RwLock}, time::Instant};
+use tokio::{runtime::Handle, sync::{mpsc, Mutex, RwLock}, task, time::Instant};
 use tracing::{debug, error};
 
 use crate::model::TaskStatus;
@@ -52,51 +52,20 @@ impl<T, E> IntoWorkerTaskResult<T> for Result<T, E> where E : Into<anyhow::Error
 }
 
 pub trait WorkerLoop {
-  async fn start_loop(worker: Worker<Self>) -> WorkerTaskResult<()>;
+  fn start_loop(&self, worker: &Worker, handle: Handle) -> WorkerTaskResult<()>;
 }
 
 #[derive(Clone)]
-pub struct Worker<T : WorkerLoop + ?Sized> {
+pub struct Worker {
   run_info: SharedWorkerInfo,
   tasks: (mpsc::Sender<TaskRunInfo>, Arc<Mutex<mpsc::Receiver<TaskRunInfo>>>),
   done_tasks_counter: Arc<AtomicIsize>,
   on_counter: Arc<AtomicUsize>,
-  stop_condition: Arc<Box<dyn Send + Sync + Fn(&Worker<T>) -> bool>>,
+  stop_condition: Arc<Option<Box<dyn Send + Sync + Fn(&Worker) -> bool>>>,
   task_sender: mpsc::Sender<TaskRunInfo>
 }
 
-const WORKER_TASKS_CAPACITY: usize = 10;
-
-impl<T : WorkerLoop + ?Sized + Clone> Worker<T> {
-  pub fn new(run_info: SharedWorkerInfo, task_sender: mpsc::Sender<TaskRunInfo>) -> Self {
-    let (sender, receiver) = mpsc::channel(WORKER_TASKS_CAPACITY);
-    Self {
-      run_info,
-      tasks: (sender, Arc::new(Mutex::new(receiver))),
-      done_tasks_counter: Arc::new(AtomicIsize::new(-1)),
-      on_counter: Arc::new(AtomicUsize::new(0)),
-      stop_condition: Arc::new(Box::new(|_| false)),
-      task_sender
-    }
-  }
-
-  pub fn with_stop_condition<F>(
-    run_info: SharedWorkerInfo,
-    task_sender: mpsc::Sender<TaskRunInfo>,
-    stop_condition: F
-  ) -> Self where F : 'static + Send + Sync + Fn(&Worker<T>) -> bool
-  {
-    let (sender, receiver) = mpsc::channel(WORKER_TASKS_CAPACITY);
-    Self {
-      run_info,
-      tasks: (sender, Arc::new(Mutex::new(receiver))),
-      done_tasks_counter: Arc::new(AtomicIsize::new(-1)),
-      on_counter: Arc::new(AtomicUsize::new(0)),
-      stop_condition: Arc::new(Box::new(stop_condition)),
-      task_sender
-    }
-  }
-
+impl Worker {
   pub fn done_tasks_count(&self) -> isize {
     self.done_tasks_counter.load(std::sync::atomic::Ordering::Relaxed)
   }
@@ -120,8 +89,12 @@ impl<T : WorkerLoop + ?Sized + Clone> Worker<T> {
   }
 
   pub async fn next_task(&self) -> Option<(WorkerRunInfo, TaskRunInfo)> {
-    if (self.stop_condition)(self) {
-      return None
+    self.done_tasks_counter.fetch_add(1, Ordering::Relaxed);
+
+    if let Some(ref stop_condition) = *self.stop_condition {
+      if stop_condition(self) {
+        return None
+      }
     }
 
     let task_info = loop {
@@ -144,10 +117,14 @@ impl<T : WorkerLoop + ?Sized + Clone> Worker<T> {
     Some((run_info, task_info))
   }
 
-  pub async fn worker_loop(self) {
+  pub async fn worker_loop<T>(self) where T: WorkerLoop + 'static + Send + Sync + Default {
     let on_counter = self.on_counter.clone();
     on_counter.fetch_add(1, Ordering::Relaxed);
-    if let Err(err) = T::start_loop(self).await {
+
+    let handle = Handle::current();
+    let worker_loop = T::default();
+    
+    if let Err(err) = task::spawn_blocking(move || worker_loop.start_loop(&self, handle)).await.unwrap() {
       if let Some(task_info) = err.task_info {
 
         let _ = task_info.status.send(if err.fail {
@@ -162,6 +139,48 @@ impl<T : WorkerLoop + ?Sized + Clone> Worker<T> {
     } else {
       debug!("worker ended correctly");
     }
+    
     on_counter.fetch_sub(1, Ordering::Relaxed);
+  }
+}
+
+pub struct WorkerBuilder {
+  run_info: Option<SharedWorkerInfo>,
+  task_sender: Option<mpsc::Sender<TaskRunInfo>>,
+  stop_condition: Option<Box<dyn Send + Sync + Fn(&Worker) -> bool>>
+}
+
+const WORKER_TASKS_CAPACITY: usize = 10;
+
+impl WorkerBuilder {
+  pub fn new() -> Self {
+    Self { run_info: None, task_sender: None, stop_condition: None }
+  }
+
+  pub fn run_info(mut self, run_info: SharedWorkerInfo) -> Self {
+    self.run_info = Some(run_info);
+    self
+  }
+
+  pub fn task_sender(mut self, task_sender: mpsc::Sender<TaskRunInfo>) -> Self {
+    self.task_sender = Some(task_sender);
+    self
+  }
+
+  pub fn stop_condition<F>(mut self, stop_condition: F) -> Self where F: 'static + Send + Sync + Fn(&Worker) -> bool {
+    self.stop_condition = Some(Box::new(stop_condition));
+    self
+  }
+
+  pub fn build(self) -> Worker {
+    let (sender, receiver) = mpsc::channel(WORKER_TASKS_CAPACITY);
+    Worker {
+      run_info: self.run_info.expect("no worker run info provided"),
+      tasks: (sender, Arc::new(Mutex::new(receiver))),
+      done_tasks_counter: Arc::new(AtomicIsize::new(-1)),
+      on_counter: Arc::new(AtomicUsize::new(0)),
+      stop_condition: Arc::new(self.stop_condition),
+      task_sender: self.task_sender.expect("no task sender provided")
+    }
   }
 }

@@ -9,7 +9,7 @@ use tracing::{debug, info, trace};
 
 use crate::model::{Task, TaskStatus, CreateWorkerData};
 
-use super::{python::PythonWorkerLoop, task::TaskRunInfo, worker::{SharedWorkerInfo, Worker, WorkerRunInfo}};
+use super::{python::PythonWorkerLoop, task::TaskRunInfo, worker::{SharedWorkerInfo, Worker, WorkerBuilder, WorkerRunInfo}};
 
 // does not check if file exists only if the extension is valid
 fn can_be_python_file(path: impl AsRef<Path>) -> bool {
@@ -27,7 +27,7 @@ fn get_worker_name(path: impl AsRef<Path>) -> Option<String> {
 pub struct WorkerService {
   directory: Arc<PathBuf>, // must never change
   workers_info: Arc<Mutex<HashMap<PathBuf, SharedWorkerInfo>>>,
-  workers: Arc<Mutex<HashMap<String, Worker<PythonWorkerLoop>>>>,
+  workers: Arc<Mutex<HashMap<String, Worker>>>,
   task_sender: mpsc::Sender<TaskRunInfo>
 }
 
@@ -149,14 +149,14 @@ impl WorkerService {
 
     if task.dedicated { // create a worker for dedicated work
       let info = self.get_worker_shared_run_info(&task.worker).await?;
-      let worker: Worker<PythonWorkerLoop> = Worker::with_stop_condition(
-        info.clone(),
-        self.task_sender.clone(),
-        |worker| worker.done_tasks_count() > 0 // will die after one task
-      );
+      let worker: Worker = WorkerBuilder::new()
+        .run_info(info.clone())
+        .task_sender(self.task_sender.clone())
+        .stop_condition(|worker| worker.done_tasks_count() > 0) // will die after one task
+        .build();
       worker.queue_task(task_info).await;
 
-      tokio::spawn(worker.worker_loop());
+      tokio::spawn(worker.worker_loop::<PythonWorkerLoop>());
       return Ok(())
     }
 
@@ -175,10 +175,13 @@ impl WorkerService {
 
     { // create a new worker
       let info = self.get_worker_shared_run_info(&task.worker).await?;
-      let worker = Worker::new(info.clone(), self.task_sender.clone());
+      let worker = WorkerBuilder::new()
+        .run_info(info.clone())
+        .task_sender(self.task_sender.clone())
+        .build();
       worker.queue_task(task_info).await;
       
-      tokio::spawn(worker.clone().worker_loop());
+      tokio::spawn(worker.clone().worker_loop::<PythonWorkerLoop>());
       self.workers.lock().await.insert(task.worker.clone(), worker);
     }
 
