@@ -178,6 +178,7 @@ impl WorkerService {
       let worker = WorkerBuilder::new()
         .run_info(info.clone())
         .task_sender(self.task_sender.clone())
+        .retries(3)
         .build();
       worker.queue_task(task_info).await;
       

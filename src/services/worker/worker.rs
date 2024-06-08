@@ -62,7 +62,8 @@ pub struct Worker {
   done_tasks_counter: Arc<AtomicIsize>,
   on_counter: Arc<AtomicUsize>,
   stop_condition: Arc<Option<Box<dyn Send + Sync + Fn(&Worker) -> bool>>>,
-  task_sender: mpsc::Sender<TaskRunInfo>
+  task_sender: mpsc::Sender<TaskRunInfo>,
+  retries: u8 // should not be changed for consistency since it's not shared
 }
 
 impl Worker {
@@ -120,25 +121,29 @@ impl Worker {
   pub async fn worker_loop<T>(self) where T: WorkerLoop + 'static + Send + Sync + Default {
     let on_counter = self.on_counter.clone();
     on_counter.fetch_add(1, Ordering::Relaxed);
-
-    let handle = Handle::current();
-    let worker_loop = T::default();
     
-    if let Err(err) = task::spawn_blocking(move || worker_loop.start_loop(&self, handle)).await.unwrap() {
-      if let Some(task_info) = err.task_info {
+    for i in 0..(self.retries + 1) {
+      let handle = Handle::current();
+      let worker_loop = T::default();
+      let self_cloned = self.clone();
 
-        let _ = task_info.status.send(if err.fail {
-          let (duration_total, duration_execution) = task_info.get_duration_now();
-          TaskStatus::Fail { reason: err.other_error.to_string(), duration_total, duration_execution }
-        } else {
-          TaskStatus::Error { reason: err.other_error.to_string() }
-        });
+      if let Err(err) = task::spawn_blocking(move || worker_loop.start_loop(&self_cloned, handle)).await.unwrap() {
+        if let Some(task_info) = err.task_info {
 
+          let _ = task_info.status.send(if err.fail {
+            let (duration_total, duration_execution) = task_info.get_duration_now();
+            TaskStatus::Fail { reason: err.other_error.to_string(), duration_total, duration_execution }
+          } else {
+            TaskStatus::Error { reason: err.other_error.to_string() }
+          });
+
+        }
+        error!("worker got error: {} (retries: {})", err.other_error.to_string(), self.retries - i);
+      } else {
+        debug!("worker gracefully stopped");
       }
-      error!("worker ended with error: {}", err.other_error.to_string());
-    } else {
-      debug!("worker ended correctly");
     }
+    error!("worker ended");
     
     on_counter.fetch_sub(1, Ordering::Relaxed);
   }
@@ -147,14 +152,15 @@ impl Worker {
 pub struct WorkerBuilder {
   run_info: Option<SharedWorkerInfo>,
   task_sender: Option<mpsc::Sender<TaskRunInfo>>,
-  stop_condition: Option<Box<dyn Send + Sync + Fn(&Worker) -> bool>>
+  stop_condition: Option<Box<dyn Send + Sync + Fn(&Worker) -> bool>>,
+  retries: u8
 }
 
 const WORKER_TASKS_CAPACITY: usize = 10;
 
 impl WorkerBuilder {
   pub fn new() -> Self {
-    Self { run_info: None, task_sender: None, stop_condition: None }
+    Self { run_info: None, task_sender: None, stop_condition: None, retries: 0 }
   }
 
   pub fn run_info(mut self, run_info: SharedWorkerInfo) -> Self {
@@ -172,6 +178,11 @@ impl WorkerBuilder {
     self
   }
 
+  pub fn retries(mut self, retries: u8) -> Self {
+    self.retries = retries;
+    self
+  }
+
   pub fn build(self) -> Worker {
     let (sender, receiver) = mpsc::channel(WORKER_TASKS_CAPACITY);
     Worker {
@@ -180,7 +191,8 @@ impl WorkerBuilder {
       done_tasks_counter: Arc::new(AtomicIsize::new(-1)),
       on_counter: Arc::new(AtomicUsize::new(0)),
       stop_condition: Arc::new(self.stop_condition),
-      task_sender: self.task_sender.expect("no task sender provided")
+      task_sender: self.task_sender.expect("no task sender provided"),
+      retries: self.retries
     }
   }
 }
