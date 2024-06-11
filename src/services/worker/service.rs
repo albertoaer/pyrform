@@ -32,6 +32,7 @@ pub struct WorkerService {
 }
 
 const SERVICE_TASKS_CAPACITY: usize = 1000;
+const WORKER_MAX_RETRIES: u8 = 3;
 
 impl WorkerService {
   /// TODO: allow recursive worker directory
@@ -178,7 +179,7 @@ impl WorkerService {
       let worker = WorkerBuilder::new()
         .run_info(info.clone())
         .task_sender(self.task_sender.clone())
-        .retries(3)
+        .retries(WORKER_MAX_RETRIES)
         .build();
       worker.queue_task(task_info).await;
       
