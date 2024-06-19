@@ -53,4 +53,22 @@ impl TaskStatus {
       _ => false
     }
   }
+
+  pub fn is_finished(&self) -> bool {
+    match self {
+      Self::Pending | Self::Running => false,
+      _ => true
+    }
+  }
+
+  pub fn is_queued_again(&self) -> bool {
+    match self {
+      Self::Done { queue_again, .. } if *queue_again => true,
+      _ => false
+    }
+  }
+
+  pub fn is_finished_forever(&self) -> bool {
+    self.is_finished() && !self.is_queued_again()
+  }
 }

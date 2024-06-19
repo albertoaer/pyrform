@@ -25,10 +25,10 @@ pub struct ReplaceQuery {
 pub async fn add_worker(
   State(WorkerState { worker_service }): State<WorkerState>,
   Path(name): Path<String>,
-  Query(replace): Query<ReplaceQuery>,
+  Query(ReplaceQuery { replace } ): Query<ReplaceQuery>,
   source: String
 ) -> Response {
-  match worker_service.add_worker(CreateWorkerData { name, source, replace: replace.replace, }).await {
+  match worker_service.add_worker(CreateWorkerData { name, source, replace }).await {
     Ok(_) => StatusCode::OK.into_response(),
     Err(err) => (StatusCode::CONFLICT, Json(json!({ "error": err.to_string() }))).into_response()
   }

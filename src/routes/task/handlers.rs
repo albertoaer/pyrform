@@ -1,7 +1,10 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
-use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json};
+use serde::{Serialize, Deserialize};
 use serde_json::json;
+use serde_with::{serde_as, DurationSeconds};
+use tokio::{select, time};
 use uuid::Uuid;
 
 use crate::model::Task;
@@ -16,9 +19,20 @@ pub async fn list_tasks(State(TaskState { queued, .. }): State<TaskState>) -> im
   (StatusCode::OK, Json(json!(data)))
 }
 
+#[serde_as]
+#[derive(Serialize, Deserialize)]
+pub struct QueueTaskQuery {
+  #[serde(default)]
+  r#await: bool,
+  #[serde(default)]
+  #[serde_as(as = "DurationSeconds<f64>")]
+  timeout: Duration
+}
+
 pub async fn queue_task(
   State(TaskState { worker_service, queued }): State<TaskState>,
-  Json(task): Json<Task>
+  Query(QueueTaskQuery { r#await, timeout }): Query<QueueTaskQuery>,
+  Json(task): Json<Task>,
 ) -> impl IntoResponse {
   let (stop, status) = match worker_service.queue_task(task.clone()).await {
     Ok(channels) => channels,
@@ -28,14 +42,37 @@ pub async fn queue_task(
   let uuid = Uuid::new_v4();
   let id = uuid.to_string();
 
-  let info = status.borrow().clone();
+  let mut info = status.clone();
   queued.lock().await.insert(uuid, TaskManager {
     task,
     status,
     stop: Some(stop)
   });
 
-  (StatusCode::OK, Json(json!({ "id": id, "info": info })))
+  if !r#await {
+    return (StatusCode::OK, Json(json!({ "id": id, "info": info.borrow().clone() })))
+  }
+
+  println!("{:?}", timeout);
+  const DEFAULT_AWAIT_TIMEOUT: Duration = Duration::from_secs(10);
+  let timeout = time::sleep(if timeout.is_zero() { DEFAULT_AWAIT_TIMEOUT } else { timeout });
+  tokio::pin!(timeout);
+
+  loop {
+    select! {
+      changed = info.changed() => {
+        if let Err(err) = changed {
+          return (StatusCode::OK, Json(json!({ "error": err.to_string() })))
+        }
+
+        let current_info = info.borrow();
+        if current_info.is_finished() {
+          return (StatusCode::OK, Json(json!({ "id": id, "info": current_info.clone() })))
+        }
+      }
+      _ = &mut timeout => return (StatusCode::OK, Json(json!({ "id": id, "info": info.borrow().clone() })))
+    }
+  }
 }
 
 pub async fn get_task(
