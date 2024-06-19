@@ -63,7 +63,10 @@ To queue a task is really simple, you can achive it with a **POST JSON HTTP** re
 - `title: option<string> (default = empty)` is the title of the task. Can be omitted.
 - `dedicated: bool (default = false)` whether to spawn or not an empty worker for the task. can be omitted.
 - `args: string[] (default = [])` are the arguments to perform the task with. Can be omitted resulting in an empty array.
-- `delay: (int | float) > 0 (default = 0)` is the delay to wait before running the task. If the task is queued again, it can behave like a *cron* job unless it's also changed during task execution. Can be omitted.
+- `delay: (int | float) > 0 (default = 0)` **unit: second, so 500ms would be 0.5 and so on**
+  - Is the delay to wait before running the task.
+  - If the task is queued again, it can behave like a *cron* job unless it's also changed during task execution.
+  - This parameter can be omitted.
 
 The task result can be consulted at `GET /task` or `GET /task/:id`.
 
