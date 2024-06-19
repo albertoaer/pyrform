@@ -42,6 +42,7 @@ impl WorkerService {
     let worker_files = fs_sync::read_dir(&directory)?.filter_map(|item| {
       let path = item.ok()?.path();
       if can_be_python_file(&path) {
+        info!("Loaded worker: {:?}", path.file_name().unwrap_or(path.as_os_str()));
         Some((path, Arc::new(RwLock::new(None))))
       } else {
         None
@@ -78,7 +79,10 @@ impl WorkerService {
         }
 
         match (path.is_file(), self.workers_info.lock().await.entry(path.clone())) {
-          (true, Entry::Vacant(vacant)) => { vacant.insert(Arc::new(RwLock::new(None))); }, // file create/renamed
+          (true, Entry::Vacant(vacant)) => {
+            info!("Loaded worker: {:?}", path.file_name().unwrap_or(path.as_os_str()));
+            vacant.insert(Arc::new(RwLock::new(None)));
+          }, // file create/renamed
           (false, Entry::Occupied(mut ocupied)) => {
             *ocupied.get_mut().write().await = None;
             ocupied.remove_entry();
