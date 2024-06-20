@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use serde::{Serialize, Deserialize};
-use serde_with::{serde_as, DurationSeconds};
+use serde_with::{serde_as, DurationMilliSeconds};
 
 fn task_function_default() -> String {
   "worker".into()
@@ -20,7 +20,7 @@ pub struct Task {
   #[serde(default)]
   pub args: Vec<String>,
   #[serde(default)]
-  #[serde_as(as = "DurationSeconds<f64>")]
+  #[serde_as(as = "DurationMilliSeconds<f64>")]
   pub delay: Duration,
 }
 

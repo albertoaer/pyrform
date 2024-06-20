@@ -3,7 +3,7 @@ use std::{collections::HashMap, time::Duration};
 use axum::{extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json};
 use serde::{Serialize, Deserialize};
 use serde_json::json;
-use serde_with::{serde_as, DurationSeconds};
+use serde_with::{serde_as, DurationMilliSeconds};
 use tokio::{select, time};
 use uuid::Uuid;
 
@@ -25,7 +25,7 @@ pub struct QueueTaskQuery {
   #[serde(default)]
   r#await: bool,
   #[serde(default)]
-  #[serde_as(as = "DurationSeconds<f64>")]
+  #[serde_as(as = "DurationMilliSeconds<f64>")]
   timeout: Duration
 }
 

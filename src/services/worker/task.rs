@@ -74,13 +74,13 @@ impl Task {
   }
 
   #[getter]
-  pub fn delay(&self) -> Duration {
-    self.delay.clone()
+  pub fn delay(&self) -> u128 {
+    self.delay.as_millis()
   }
 
   #[setter]
-  pub fn set_delay(&mut self, delay: Duration) {
-    self.delay = delay
+  pub fn set_delay(&mut self, delay: u64) {
+    self.delay = Duration::from_millis(delay)
   }
 
   #[getter]
