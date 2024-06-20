@@ -7,7 +7,7 @@ use serde_with::{serde_as, DurationMilliSeconds};
 use tokio::{select, time};
 use uuid::Uuid;
 
-use crate::model::Task;
+use crate::model::{Task, TaskStatus};
 
 use super::state::{TaskManager, TaskState};
 
@@ -50,7 +50,7 @@ pub async fn queue_task(
   });
 
   if !r#await {
-    return (StatusCode::OK, Json(json!({ "id": id, "info": info.borrow().clone() })))
+    return (StatusCode::OK, Json(get_json_status_with_id(id, info.borrow().clone())))
   }
 
   println!("{:?}", timeout);
@@ -67,10 +67,10 @@ pub async fn queue_task(
 
         let current_info = info.borrow();
         if current_info.is_finished() {
-          return (StatusCode::OK, Json(json!({ "id": id, "info": current_info.clone() })))
+          return (StatusCode::OK, Json(get_json_status_with_id(id, current_info.clone())))
         }
       }
-      _ = &mut timeout => return (StatusCode::OK, Json(json!({ "id": id, "info": info.borrow().clone() })))
+      _ = &mut timeout => return (StatusCode::OK, Json(get_json_status_with_id(id, info.borrow().clone())))
     }
   }
 }
@@ -84,7 +84,7 @@ pub async fn get_task(
     .and_then(|(_, manager)| Some(manager.status.borrow().clone()));
 
   match status {
-    Some(status) => (StatusCode::OK, Json(json!({ "id": id, "info": status }))),
+    Some(status) => (StatusCode::OK, Json(get_json_status_with_id(id, status))),
     None => (StatusCode::NOT_FOUND, Json(json!({ "error": format!("{} not found", id) }))),
   }
 }
@@ -106,4 +106,10 @@ pub async fn cancel_task(
     },
     _ => (StatusCode::NOT_FOUND, Json(json!({ "error": format!("{} not found or cannot be cancelled", id)}))),
   }
+}
+
+fn get_json_status_with_id(id: String, status: TaskStatus) -> serde_json::Value {
+  let mut result = serde_json::to_value(status).unwrap();
+  result.as_object_mut().unwrap().insert("id".to_string(), serde_json::Value::String(id));
+  return result;
 }
