@@ -34,7 +34,7 @@ This worker holds a shared dictionary used as a small db (note: don't update the
 }
 ```
 
-The outcume of this would be None. We can retrive the value using the following input:
+The outcome of this would be None. We can retrieve the value using the following input:
 ```json
 {
   "worker": "db",
