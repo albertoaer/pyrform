@@ -25,6 +25,18 @@ graph TB;
   end
 ```
 
+## Use cases
+
+`pyrform` is a great choice to delegate work, like delayed tasks, cron jobs, external requests, object caching, etc. This is possible thanks to the following features:
+- **hot reload** of the workers *source code*.
+- **Python** itself, since it's a scripting dynamic language, easy to code fast small functions and fix or scale them later.
+- **simple API**, perfect for queueing the work and letting the service perform the tasks without worrying about scheduling.
+
+For specific examples checkout [the examples directory](examples).
+
+`pyrform` does not offer any kind of authorization so be careful, as it's not intended to be an exposed API. Besides, arguments and functions outcome (*return*) are
+formatted as plain strings, so you must decide the way to work around object *serialization*/*deserialization*.
+
 ## Usage
 
 ```
@@ -63,7 +75,7 @@ To queue a task is really simple, you can achive it with a **POST JSON HTTP** re
 - `title: option<string> (default = empty)` is the title of the task. Can be omitted.
 - `dedicated: bool (default = false)` whether to spawn or not an empty worker for the task. can be omitted.
 - `args: string[] (default = [])` are the arguments to perform the task with. Can be omitted resulting in an empty array.
-- `delay: (int | float) > 0 (default = 0)` **unit: second, so 500ms would be 0.5 and so on**
+- `delay: (int | float) > 0 (default = 0)` **unit: millisecond, so 1s would be 1000, 500ms would be 500 and so on**
   - Is the delay to wait before running the task.
   - If the task is queued again, it can behave like a *cron* job unless it's also changed during task execution.
   - This parameter can be omitted.
